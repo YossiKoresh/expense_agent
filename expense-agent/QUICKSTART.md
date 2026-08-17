@@ -53,9 +53,16 @@ Scroll to `SECTION 1 — CONFIG` near the top. Change these and nothing else:
 | `DRIVE_FOLDER_ID` | The code at the end of your folder URL, after `/folders/` |
 | `BASE_CURRENCY` | `'USD'`, `'EUR'`, `'GBP'`, `'ILS'` … |
 | `BUSINESS_DESCRIPTION` | One line about your business — see below |
-| `BACKFILL_FROM` | How far back to scan, e.g. `'2026-01-01'` |
+| `BACKFILL_FROM` | How far back to scan, e.g. `'2026-01-01'`. `''` = start from today |
+| `SCANS_PER_DAY` | `1` (recommended), `2`, `4`, or `24`. See the note below |
 | `TZ` | `'America/New_York'`, `'Europe/London'`, `'Asia/Jerusalem'` … |
 | `TRACK_INCOME` | `true` to also record payouts, `false` for expenses only |
+
+**On `SCANS_PER_DAY`: leave it at 1 unless you have a reason.** Receipts are
+not time-critical, and Gmail gives Apps Script a daily call budget that a
+consumer account exhausts far sooner than a Workspace one. Hourly scanning on a
+personal Gmail is the single most reliable way to break this. Once a day is
+plenty.
 
 **Spend thirty seconds on `BUSINESS_DESCRIPTION`.** It is read by the
 classifier before every single decision and it is the difference between good
@@ -129,8 +136,13 @@ folder: there should be a `2026` folder with month folders inside, containing
 invoice PDFs with names like
 `2026-01-14 Anthropic 20.00 USD #2180-6529.pdf`.
 
-**After an hour** — most of a year of mail is usually done. It works through
-one month every five minutes and stops by itself.
+**After 10–20 minutes** — the backfill is usually finished. It doesn't dribble
+along one month at a time: each execution processes as many months as fit in
+its 6-minute limit, then chains the next one straight away.
+
+If your Gmail daily quota runs out partway, the log will say so and it will
+schedule itself to resume just after the quota resets at **midnight Pacific**.
+Nothing to do — it picks itself back up and finishes.
 
 **To check on it any time:** go back to the script, change `RUN()`'s body to
 `return status();`, save, and click Run. You want to see:
@@ -140,6 +152,7 @@ hasApiKey: true
 models: two real model names
 expenseRows: a number that goes up
 cursor: a date that moves forward
+backfillDone: a timestamp once it has finished
 ```
 
 **If something looks wrong:** left sidebar → **Executions**. Every run is
@@ -182,7 +195,13 @@ a whole section, a whole month, a whole year, and the totals.
 - **Re-running is always safe.** Every row carries its Gmail message id, so a
   message already in the sheet is never processed twice.
 - **Consumer Gmail has a daily quota** that a full re-scan can exhaust. It
-  resets at midnight Pacific. This is why `reclassify()` exists.
+  resets at midnight Pacific, and the script pauses itself and resumes on its
+  own rather than failing on a loop. This is also why `reclassify()` exists —
+  fixing labels should never cost you a re-scan.
+- **To redo a period** (say you widened `KEYWORDS`): change `RUN()` to
+  `return restartBackfill('2026-03-01');`. Safe — rows dedupe on Gmail id.
+- **To change how often it checks:** edit `SCANS_PER_DAY` and run `setup()`
+  again. It rebuilds the triggers and touches no data.
 - **Your API key never leaves your Google account**, and no data goes anywhere
   except Google and the Anthropic API.
 

@@ -53,7 +53,16 @@ var CONFIG = {
   /* ---- backfill ---------------------------------------------------------*/
 
   // How far back the first full scan should reach. YYYY-MM-DD.
+  // Set to '' to skip history entirely and only track from today onwards.
+  // The backfill runs flat out — see SECTION 4 — not one month per hour.
   BACKFILL_FROM: '2026-01-01',
+
+  // How often to check for new expenses once the backfill is done.
+  //   1  once a day        — plenty for most people, cheapest, safest on quota
+  //   2  twice a day
+  //   4  every 6 hours
+  //   24 hourly            — only worth it on a Workspace account
+  SCANS_PER_DAY: 1,
 
   /* ---- optional ---------------------------------------------------------*/
 
@@ -62,8 +71,8 @@ var CONFIG = {
   TAB: 'Expenses',
   TAB_IN: 'Income',
   TRACK_INCOME: true,            // set false if you only care about spending
-  DAILY_HOUR: 6,                 // hour of day for the daily scan
-  MAX_PER_RUN: 25,               // messages fully processed per execution
+  DAILY_HOUR: 6,                 // hour of the first scan of the day
+  MAX_PER_RUN: 30,               // messages fully processed per execution
   MAX_PDF_MB: 20,                // skip attachments bigger than this
   BUDGET_YEARS: [2026, 2027],
 
@@ -191,22 +200,130 @@ function setup() {
     out.push(buildBudgets());
   }
 
-  // daily scan
+  // ongoing scan, at whatever cadence was asked for
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'dailyRun' || t.getHandlerFunction() === 'backfillTick') {
-      ScriptApp.deleteTrigger(t);
-    }
+    var f = t.getHandlerFunction();
+    if (f === 'dailyRun' || f === 'backfillTick' || f === 'catchUp') ScriptApp.deleteTrigger(t);
   });
-  ScriptApp.newTrigger('dailyRun').timeBased().everyDays(1).atHour(CONFIG.DAILY_HOUR).create();
-  ScriptApp.newTrigger('backfillTick').timeBased().everyMinutes(5).create();
+  var n = Number(CONFIG.SCANS_PER_DAY) || 1;
+  if (n <= 1) {
+    ScriptApp.newTrigger('dailyRun').timeBased().everyDays(1).atHour(CONFIG.DAILY_HOUR).create();
+    out.push('scanning once a day at ' + CONFIG.DAILY_HOUR + ':00');
+  } else {
+    ScriptApp.newTrigger('dailyRun').timeBased().everyHours(Math.max(1, Math.round(24 / n))).create();
+    out.push('scanning ' + n + 'x a day');
+  }
 
   var p = props();
-  if (!p.getProperty('BF_CURSOR')) p.setProperty('BF_CURSOR', CONFIG.BACKFILL_FROM);
-  out.push('backfill cursor at ' + p.getProperty('BF_CURSOR'));
+  if (!p.getProperty('BF_CURSOR') && CONFIG.BACKFILL_FROM) {
+    p.setProperty('BF_CURSOR', CONFIG.BACKFILL_FROM);
+  }
+
+  // history, if wanted — this runs flat out rather than dribbling
+  if (CONFIG.BACKFILL_FROM && !p.getProperty('BF_DONE')) {
+    out.push(catchUp());
+  } else {
+    out.push('no backfill requested, tracking from today onwards');
+  }
 
   var s = out.join(' | ');
   console.log(s);
   return s;
+}
+
+
+/* ============================================================================
+ * SECTION 4b — FAST BACKFILL, AND THE GMAIL QUOTA
+ * ----------------------------------------------------------------------------
+ * The obvious design is a 5-minute trigger doing one month per tick. Do not do
+ * that. It turns a year into an afternoon at best, and if anything fails the
+ * cursor never advances and it retries forever — I watched a real install rack
+ * up 288 consecutive failures in a day, ingesting nothing.
+ *
+ * Instead: one execution chews through as many months as fit in ~4.5 minutes
+ * (Apps Script kills you at 6), then chains the next execution a minute later.
+ * A year is a handful of runs.
+ *
+ * The real ceiling is the Gmail daily quota, which a consumer account exhausts
+ * far sooner than a Workspace one. When that happens the guard stops the loop
+ * and schedules a resume for just after the quota resets at midnight PACIFIC —
+ * so it restarts itself instead of hammering away and burning tomorrow's
+ * allowance too.
+ * ========================================================================== */
+
+function catchUp() {
+  var start = new Date().getTime();
+  var p = props();
+  var passes = 0;
+
+  while (new Date().getTime() - start < 4.5 * 60 * 1000) {
+    if (quotaBlocked()) {
+      return 'gmail quota spent after ' + passes + ' passes, resuming ' + scheduleAfterQuotaReset();
+    }
+    var r = guard(backfillTickWork);
+    passes++;
+    if (typeof r === 'string' && r.indexOf('paused') === 0) {
+      return 'gmail quota hit after ' + passes + ' passes, resuming ' + scheduleAfterQuotaReset();
+    }
+    if (p.getProperty('BF_DONE')) {
+      clearCatchUp();
+      return 'backfill complete after ' + passes + ' passes';
+    }
+  }
+  chainCatchUp();
+  return 'ran ' + passes + ' passes, cursor at ' + p.getProperty('BF_CURSOR') + ', chained';
+}
+
+function clearCatchUp() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'catchUp') ScriptApp.deleteTrigger(t);
+  });
+}
+function chainCatchUp() {
+  clearCatchUp();
+  ScriptApp.newTrigger('catchUp').timeBased().after(60 * 1000).create();
+}
+
+/** Gmail's daily quota resets at midnight Pacific, not local midnight. */
+function quotaDay() {
+  return Utilities.formatDate(new Date(), 'America/Los_Angeles', 'yyyy-MM-dd');
+}
+function quotaBlocked() {
+  return props().getProperty('QUOTA_BLOCKED') === quotaDay();
+}
+function guard(fn) {
+  if (quotaBlocked()) return 'skipped: gmail quota spent for today';
+  try {
+    return fn();
+  } catch (e) {
+    if (String(e).indexOf('too many times for one day') >= 0) {
+      props().setProperty('QUOTA_BLOCKED', quotaDay());
+      return 'paused: gmail quota hit';
+    }
+    throw e;
+  }
+}
+function scheduleAfterQuotaReset() {
+  var now = new Date();
+  var h = Number(Utilities.formatDate(now, 'America/Los_Angeles', 'HH'));
+  var mi = Number(Utilities.formatDate(now, 'America/Los_Angeles', 'mm'));
+  var at = new Date(now.getTime() + ((24 - h) * 60 - mi + 10) * 60 * 1000);
+  clearCatchUp();
+  ScriptApp.newTrigger('catchUp').timeBased().at(at).create();
+  return at.toISOString();
+}
+
+/** Rewind and redo a whole period. Safe — rows dedupe on Gmail message id. */
+function restartBackfill(fromDate) {
+  var p = props();
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    var f = t.getHandlerFunction();
+    if (f === 'backfillTick' || f === 'catchUp') ScriptApp.deleteTrigger(t);
+  });
+  p.setProperty('BF_CURSOR', fromDate || CONFIG.BACKFILL_FROM);
+  p.deleteProperty('BF_DONE');
+  p.deleteProperty('QUOTA_BLOCKED');
+  return catchUp();
 }
 
 /**
@@ -239,7 +356,7 @@ function modelFast()  { return CONFIG.MODEL_FAST  || props().getProperty('MODEL_
 function modelSmart() { return CONFIG.MODEL_SMART || props().getProperty('MODEL_SMART'); }
 
 /** Yesterday and today, every day. Cheap because scanned threads are labelled. */
-function dailyRun() {
+function dailyRunWork() {
   var now = new Date();
   // Gmail's before: is exclusive, so reach past midnight to include today
   var to = new Date(now.getTime() + 864e5);
@@ -255,7 +372,7 @@ function dailyRun() {
  * removes its own trigger. Splitting it up keeps every execution well inside
  * the 6 minute limit and well inside the daily Gmail quota.
  */
-function backfillTick() {
+function backfillTickWork() {
   var p = props();
   var cur = p.getProperty('BF_CURSOR');
   if (!cur) return 'no cursor';
@@ -277,9 +394,7 @@ function backfillTick() {
 }
 
 function finishBackfill() {
-  ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'backfillTick') ScriptApp.deleteTrigger(t);
-  });
+  clearCatchUp();
   props().setProperty('BF_DONE', new Date().toISOString());
   if (CONFIG.MODE !== 'satellite') { try { buildBudgets(); } catch (e) {} }
   return 'backfill complete';
@@ -1100,3 +1215,13 @@ function colL(n) {
   while (n > 0) { var m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = (n - m - 1) / 26; }
   return s;
 }
+
+
+/* ============================================================================
+ * SECTION 13 — GUARDED ENTRY POINTS
+ * ----------------------------------------------------------------------------
+ * Everything the scheduler calls goes through guard(), so a Gmail quota wall
+ * pauses the system cleanly for the day instead of failing on a loop.
+ * ========================================================================== */
+function dailyRun()     { return guard(dailyRunWork); }
+function backfillTick() { return guard(backfillTickWork); }

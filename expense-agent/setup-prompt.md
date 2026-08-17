@@ -30,7 +30,10 @@ procedure, and `reference/troubleshooting.md` if anything fails.
      the classifier reads it before every decision)
    - Accounting currency?
    - Time zone?
-   - How far back should the first scan go?
+   - How far back should the first scan go? (this year / last 12 months / a
+     specific date / don't bother — the backfill is fast, usually minutes)
+   - How often should it check for new expenses after that? (once a day / twice
+     a day / every 6 hours / hourly — tell me if hourly is risky for my account)
    - Track money coming in too, or expenses only?
    - One mailbox or two?
    - File invoice PDFs to Drive, or just keep the Gmail link?
@@ -41,8 +44,9 @@ procedure, and `reference/troubleshooting.md` if anything fails.
    - `drive.google.com/drive/folders/<ID>`
 
 3. Fill in the `CONFIG` block at the top of `expense-agent.gs` with my answers and give
-   me the finished file **as a file**, not as a code block — it's ~44 KB and I
-   have to paste it into an editor.
+   me the finished file **as a file**, not as a code block — it's ~50 KB and I
+   have to paste it into an editor. Map my cadence answer to `SCANS_PER_DAY`
+   and my history answer to `BACKFILL_FROM` (`''` if I said don't bother).
 
    For two mailboxes, generate two versions: one with `MODE: 'hub'` and one with
    `MODE: 'satellite'`, sharing a `SHARED_SECRET` you generate (32+ random

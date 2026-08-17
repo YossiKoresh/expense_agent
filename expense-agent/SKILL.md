@@ -35,14 +35,23 @@ otherwise one numbered list). Do not ask them one at a time.
    beats "my business" by a mile.*
 2. **Accounting currency?** (USD / EUR / GBP / other ISO code)
 3. **Time zone?** (e.g. `America/New_York`, `Europe/London`, `Asia/Tokyo`)
-4. **How far back should the first scan go?** Default: 1 January of this year.
-5. **Track money coming in too, or expenses only?**
+4. **How far back should the first scan go?** Offer: this year so far / the
+   last 12 months / a specific date / don't bother, start from today.
+   *The backfill runs flat out — a year is usually minutes, not days — so the
+   only reason to say no is if the mailbox predates the business.*
+5. **How often should it check for new expenses afterwards?** Offer: once a day
+   (the default, and right for almost everyone) / twice a day / every 6 hours /
+   hourly.
+   *Say plainly that hourly is only sensible on a Workspace account. Consumer
+   Gmail has a much smaller daily Apps Script quota, and a fast cadence on top
+   of a big backfill is the one thing that reliably breaks this.*
+6. **Track money coming in too, or expenses only?**
    *Income mode reads payout/settlement emails from processors like Stripe,
    PayPal, Square, Shopify, or a bank, and splits their commission out as a
    Payment Processing expense — which is the only way the budget's revenue line
    is not quietly understated.*
-6. **One mailbox or two?** Two is common: a personal address and a company one.
-7. **File invoice PDFs to Drive?** (yes → they will give a folder; no → the
+7. **One mailbox or two?** Two is common: a personal address and a company one.
+8. **File invoice PDFs to Drive?** (yes → they will give a folder; no → the
    ledger keeps only the Gmail link)
 
 Then tell them to do this and paste back the two URLs:
@@ -81,7 +90,9 @@ code blocks in chat — they have to paste ~44 KB into an editor and a chat code
 block makes that painful.
 
 If they said "expenses only", also set `TRACK_INCOME: false`. If they said no
-Drive filing, set `DRIVE_FOLDER_ID: ''`.
+Drive filing, set `DRIVE_FOLDER_ID: ''`. Map their cadence answer to
+`SCANS_PER_DAY` (1 / 2 / 4 / 24) and their history answer to `BACKFILL_FROM`
+(a `YYYY-MM-DD` date, or `''` for none).
 
 ---
 
@@ -103,13 +114,18 @@ Estimated time: 3 minutes.
    Allow**. This is Google warning about their own unpublished script; it is
    expected.
 5. The execution log should end with something like
-   `models: claude-haiku-4-5 + claude-sonnet-4-5 | budgets rebuilt | backfill cursor at 2026-01-01`.
+   `models: claude-haiku-4-5 + claude-sonnet-4-5 | budgets rebuilt | scanning once a day at 6:00 | ran 4 passes, cursor at 2026-05-01, chained`.
 
 If they hit an error, go to **Troubleshooting** in `reference/troubleshooting.md`.
 
-From here the backfill walks forward one month every 5 minutes on its own and
-stops when it reaches today. A month of a busy mailbox takes a few minutes and
-costs cents.
+From here the backfill runs flat out: each execution processes as many months
+as fit in its 6-minute limit, then chains the next one a minute later. A year
+is usually done in minutes.
+
+If their Gmail daily quota runs out first, the log will say so and it will
+schedule itself to resume just after the quota resets at midnight Pacific.
+That is expected on a busy consumer mailbox, not a failure — tell them it will
+finish itself and they do not need to do anything.
 
 ---
 
@@ -172,7 +188,10 @@ Then tell them the four things they will actually want later:
   overwrite it.
 - **Missing something obvious?** The most likely cause is the keyword filter.
   Add their bank, accountant or supplier's wording to `KEYWORDS` in
-  `expense-agent.gs`, then re-run the affected month by setting `BF_CURSOR` back.
+  `expense-agent.gs`, then run `restartBackfill('2026-03-01')` to redo from
+  that date. Safe — rows dedupe on Gmail message id.
+- **Want a different cadence later?** Change `SCANS_PER_DAY` and run `setup()`
+  again. It rebuilds the triggers and never touches data.
 
 ---
 

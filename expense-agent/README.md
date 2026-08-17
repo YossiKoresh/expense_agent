@@ -164,6 +164,7 @@ excluded by label. Google charges nothing.
 
 ```
 QUICKSTART.md                10-minute setup, every click spelled out
+docs/                        the screenshots above
 SKILL.md                     installer instructions for an agent
 setup-prompt.md              same thing, pasteable into any agent
 scripts/expense-agent.gs            the main script — CONFIG block at the top

@@ -36,12 +36,23 @@ It is your own unpublished script; Google says this about every one of them.
 
 **`Service invoked too many times for one day: gmail`**
 The Gmail daily quota is spent. Consumer Gmail accounts get far less than
-Workspace ones. It resets at midnight Pacific.
+Workspace ones. It resets at **midnight Pacific**, not local midnight.
 
-The usual cause is re-scanning history you already scanned. Do not do that. The
-script labels every thread it has *looked at* — not just the ones that produced
-a row — and excludes labelled threads from every future search, so steady-state
-running costs almost nothing. A full re-scan is what burns the quota.
+Since v1.0.2 this is handled: the guard catches it, marks the day as spent,
+skips further runs, and schedules a resume for 10 minutes after the reset. You
+should see `gmail quota hit ... resuming <timestamp>` in the log and nothing
+more until then. That is working as intended, not a failure.
+
+If you are seeing the raw exception on a loop, you are on an older copy. The
+symptom is unmistakable and worth describing, because it cost a real install an
+entire day: a 5-minute backfill trigger blew the quota, then failed at the
+*first* Gmail call on every subsequent run. The cursor never advanced, so it
+retried 288 times that day, ingested nothing, and burned the next day's
+allowance the moment it reset. Two changes fixed it — the quota guard, and
+replacing the 5-minute trigger with the self-chaining `catchUp()`.
+
+Steady-state cost is near zero regardless: every thread the script has *looked
+at* gets labelled, and labelled threads are excluded from all future searches.
 
 **Rows are missing for a period the script says it scanned**
 Almost certainly the flip side of the same mechanism: threads were labelled in
@@ -60,6 +71,16 @@ A single message with an enormous PDF. Lower `MAX_PDF_MB`, or lower
 **The backfill is stuck on the same month**
 By design: the cursor only advances when a month completes with zero errors.
 Open **Executions** in the left sidebar, expand the failing run, read the error.
+
+**The backfill is not running at all**
+Check the triggers. `catchUp` deletes its own trigger when it finishes, and
+`finishBackfill()` does the same — so moving `BF_CURSOR` back by hand does
+nothing, because the thing that reads it no longer exists. Use
+`restartBackfill('2026-01-01')`, which rewinds *and* restarts the chain.
+
+**I want it to check more/less often**
+Change `SCANS_PER_DAY` (1, 2, 4 or 24) and run `setup()` again. On consumer
+Gmail, stay at 1 or 2.
 
 ---
 
